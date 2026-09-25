@@ -158,3 +158,54 @@ kubectl get resourceclaims -n <namespace> -o wide
 An allocated claim names its devices.
 Each device name encodes machine, adapter, and domain (`<machineid>-<apid>-<apqi>`).
 Inside a VM guest, `lszcrypt` shows the passed-through queues at those adapter-domain positions, and control-domain access is visible in `/sys/bus/ap/ap_control_domain_mask` read from the guest.
+
+## Native container claims
+
+Container passthrough uses DeviceClass `ap-queue.container.ibm.com` and requires the alpha `ContainerWorkload` feature gate (installed by the `feature-container-workload` Kustomize component).
+The claim text is the same shape as a VM claim; only the DeviceClass name changes:
+
+```yaml
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaimTemplate
+metadata:
+  name: cca-ap-queue-container
+spec:
+  spec:
+    devices:
+      requests:
+        - name: cca-ap-queue
+          exactly:
+            deviceClassName: ap-queue.container.ibm.com
+            allocationMode: ExactCount
+            count: 1
+            selectors:
+              - cel:
+                  expression: >-
+                    device.attributes["cex.ibm.com"].type == "cca" &&
+                    device.attributes["cex.ibm.com"].queue_status == "online"
+```
+
+A Pod consumes the claim through `resourceClaims` and `resources.claims`:
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: cex-container-demo
+spec:
+  containers:
+    - name: crypto
+      image: registry.access.redhat.com/ubi9/ubi-minimal:latest
+      command: ["sleep", "infinity"]
+      resources:
+        claims:
+          - name: cex
+            request: cca-ap-queue
+  resourceClaims:
+    - name: cex
+      resourceClaimTemplateName: cca-ap-queue-container
+```
+
+A ready Pod sees `/dev/zcrypt` and `/dev/z90crypt` (both map to the filtered host node) and a shadow `/sys/bus/ap` / `/sys/devices/ap` that lists only the allocated APQNs.
+`controlDomainMode` on `CryptoConfig` is ignored for container claims.
+A full copy of this example lives under [`deploy/examples/pod-cex-container.yaml`](../../deploy/examples/pod-cex-container.yaml).

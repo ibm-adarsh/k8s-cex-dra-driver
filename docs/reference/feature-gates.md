@@ -29,11 +29,11 @@ Gates this release defines:
 
 | Gate                     | Stage | Default | Effect when enabled                                                                                                                                               |
 | ------------------------ | ----- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ContainerWorkload`      | alpha | off     | Accepts claims against the container DeviceClass `ap-queue.container.ibm.com`. The path behind it is an unimplemented stub that delivers no device.               |
-| `VirtualMachineWorkload` | beta  | on      | The virtual-machine passthrough path: claims against `ap-queue.virtual-machine.ibm.com`, vfio-ap binding, mdev creation, and the `vfio_ap`/mdev preflight checks. |
+| `ContainerWorkload`      | alpha | off     | Accepts claims against the container DeviceClass `ap-queue.container.ibm.com`. Prepares a filtered zcrypt device node plus shadow AP sysfs, returned as CDI device `ibm.com/zcrypt=<claimUID>`. |
+| `VirtualMachineWorkload` | beta  | on      | The virtual-machine passthrough path: claims against `ap-queue.virtual-machine.ibm.com`, vfio-ap binding, mdev creation, and the `vfio_ap`/mdev preflight checks.                              |
 
 With `ContainerWorkload` off, a claim against the container DeviceClass fails at prepare with an error naming the gate.
-Enabling it is for developing that path, not for delivering devices.
+Enabling it (and installing the `feature-container-workload` component) delivers the allocated APQNs into native Pods through CDI.
 Setting `VirtualMachineWorkload=false` declares a container-only node: the `vfio_ap` and mdev preflight checks are skipped, so the node runs the driver without the `vfio_ap` kernel module, and a claim against the VM DeviceClass fails at prepare with an error naming the gate.
 Cleanup is never gated - claims prepared before the flip still unprepare, and leftover vfio-ap state drains back to zcrypt on the next start.
 Disabling every workload gate is a startup error: the driver would serve nothing.

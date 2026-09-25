@@ -25,7 +25,9 @@ import (
 	"k8s-cex-dra-driver/internal/logphase"
 	"k8s-cex-dra-driver/internal/mdev"
 	"k8s-cex-dra-driver/internal/metadata"
+	"k8s-cex-dra-driver/internal/shadowsysfs"
 	"k8s-cex-dra-driver/internal/sysfs"
+	"k8s-cex-dra-driver/internal/zcryptnode"
 )
 
 // scanDetailLevel is the klog verbosity the per-cycle scan lines log at. It
@@ -92,19 +94,25 @@ func New(ctx context.Context, cfg *Config) (*Driver, error) {
 		logphase.Warnf(logphase.Preparation, "drain orphaned vfio-ap queues: %v", err)
 	}
 
-	// The file-side twin of the drain: CDI specs and KEP-5304 metadata are
-	// written at Prepare and removed at Unprepare, so a claim that dies
-	// without an Unprepare leaks them. Reconcile both directories against
-	// the live mdev set now, while no RPC can race (the helper is not
-	// started yet). Order matters: the metadata directory is Unprepare's
-	// restart-surviving witness that a claim was a VM claim, and removing
-	// it is safe only once the drain above has already reconciled the
+	// The file-side twin of the drain: CDI specs, KEP-5304 metadata, and
+	// container shadow trees are written at Prepare and removed at Unprepare,
+	// so a claim that dies without an Unprepare leaks them. Reconcile those
+	// directories against live backing state now, while no RPC can race (the
+	// helper is not started yet). Order matters: the metadata directory is
+	// Unprepare's restart-surviving witness that a claim was a VM claim, and
+	// removing it is safe only once the drain above has already reconciled the
 	// queues that witness would have guarded.
-	if err := cdi.GCStaleClaimSpecs(cfg.CDIRoot, mdev.Exists); err != nil {
+	liveClaim := func(claimUID string) bool {
+		return mdev.Exists(claimUID) || zcryptnode.Exists(claimUID)
+	}
+	if err := cdi.GCStaleClaimSpecs(cfg.CDIRoot, liveClaim); err != nil {
 		logphase.Warnf(logphase.Preparation, "GC stale CDI specs: %v", err)
 	}
 	if err := metadata.GCStaleClaimMetadata(cfg.PluginDataDirectoryPath, mdev.Exists); err != nil {
 		logphase.Warnf(logphase.Preparation, "GC stale KEP-5304 metadata: %v", err)
+	}
+	if err := shadowsysfs.GCStale(cfg.PluginDataDirectoryPath, zcryptnode.Exists); err != nil {
+		logphase.Warnf(logphase.Preparation, "GC stale shadow sysfs: %v", err)
 	}
 
 	// Initialize device state

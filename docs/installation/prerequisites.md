@@ -40,7 +40,7 @@ Run the commands in this section from any machine with `kubectl` access to the c
   containerd 2.0 or later does so by default.
   containerd 1.7 needs `enable_cdi = true` under `[plugins."io.containerd.grpc.v1.cri"]` in `/etc/containerd/config.toml`.
   CRI-O does so by default, so any CRI-O release paired with a supported Kubernetes version needs no configuration.
-  Without CDI resolution, a pod consuming a claim fails to start with `unresolvable CDI devices ibm.com/vfio-ap-passthrough=...`.
+  Without CDI resolution, a pod consuming a claim fails to start with `unresolvable CDI devices ibm.com/vfio-ap-passthrough=...` (VM path) or `ibm.com/zcrypt=...` (container path).
 
   A VM booting from a containerDisk carries two requirements beyond CDI resolution.
   KubeVirt 1.9.0 ships containerDisk content as an image volume, a Kubernetes feature that mounts a container image directly as a read-only volume.
@@ -113,4 +113,12 @@ Each node that should serve CEX queues needs:
 
   ```bash
   ls /sys/class/mdev_bus
+  ```
+
+- Multiple zcrypt device nodes (`CONFIG_ZCRYPT_MULTIDEVNODES`). ([`ContainerWorkload=true`](../reference/feature-gates.md))
+  The container path creates a filtered character device per claim through `/sys/class/zcrypt`.
+  Without that interface, preflight fails the node when the container gate is on.
+
+  ```bash
+  ls /sys/class/zcrypt
   ```

@@ -1,0 +1,47 @@
+# Example: native Pod consuming a CEX AP queue through DRA + CDI.
+#
+# Prerequisites:
+#   - Driver deployed with the feature-container-workload component
+#     (DeviceClass ap-queue.container.ibm.com + ContainerWorkload=true +
+#     /sys/class/zcrypt mount).
+#   - Node has CONFIG_ZCRYPT_MULTIDEVNODES ( /sys/class/zcrypt present ).
+#   - Bus-level apmask/aqmask remain all-1s (unchanged from VM-path nodes).
+#
+# Apply:
+#   kubectl apply -f deploy/examples/pod-cex-container.yaml
+---
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaimTemplate
+metadata:
+  name: cca-ap-queue-container
+spec:
+  spec:
+    devices:
+      requests:
+        - name: cca-ap-queue
+          exactly:
+            deviceClassName: ap-queue.container.ibm.com
+            allocationMode: ExactCount
+            count: 1
+            selectors:
+              - cel:
+                  expression: >-
+                    device.attributes["cex.ibm.com"].type == "cca" &&
+                    device.attributes["cex.ibm.com"].queue_status == "online"
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: cex-container-demo
+spec:
+  containers:
+    - name: crypto
+      image: registry.access.redhat.com/ubi9/ubi-minimal:latest
+      command: ["sleep", "infinity"]
+      resources:
+        claims:
+          - name: cex
+            request: cca-ap-queue
+  resourceClaims:
+    - name: cex
+      resourceClaimTemplateName: cca-ap-queue-container

@@ -2,17 +2,14 @@ apiVersion: kustomize.config.k8s.io/v1alpha1
 kind: Component
 
 # Opt-in: enables the container workload path, which is alpha and off by
-# default. Ships the two halves of the feature as one unit so they cannot
-# drift apart: the container DeviceClass, and the ContainerWorkload feature
-# gate the driver requires before it prepares a claim against that class.
+# default. Ships the halves of the feature as one unit so they cannot drift
+# apart: the container DeviceClass, the ContainerWorkload feature gate the
+# driver requires before it prepares a claim against that class, and the
+# /sys/class/zcrypt host mount used to create filtered zcrypt device nodes.
 #
-# The path behind the gate is an unimplemented stub - opting in exposes it
-# for development, it does not make a container claim deliver a device.
-#
-# The gate travels as the FEATURE_GATES environment variable, the form every
-# driver option takes here: env entries merge by name under a strategic merge,
-# so this component and an overlay setting some other option both survive. An
-# arg would not - a strategic merge replaces a container's args list wholesale.
+# The CDI spool mount lives in the base DaemonSet (shared with the VM path).
+# Shadow AP sysfs trees are written under the already-mounted kubelet plugin
+# data directory, so no extra volume is required for them.
 resources:
   - deviceclass-container.yaml
 
@@ -33,3 +30,11 @@ patches:
                 env:
                   - name: FEATURE_GATES
                     value: ContainerWorkload=true
+                volumeMounts:
+                  - name: sys-class-zcrypt
+                    mountPath: /sys/class/zcrypt
+            volumes:
+              - name: sys-class-zcrypt
+                hostPath:
+                  path: /sys/class/zcrypt
+                  type: Directory

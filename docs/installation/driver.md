@@ -41,9 +41,9 @@ The manifests live under `deploy/kustomize/`:
 base/                       DaemonSet (hardened, unprivileged), SA, ClusterRole(Binding)
 components/
   deviceclass-vm/           DeviceClass ap-queue.virtual-machine.ibm.com (opt-in)
-  feature-container-workload/  container DeviceClass + ContainerWorkload gate (opt-in, alpha)
+  feature-container-workload/  container DeviceClass + ContainerWorkload gate + /sys/class/zcrypt (opt-in, alpha)
   skip-preflight/           sets CEX_DRA_SKIP_PREFLIGHT=1                 (opt-in)
-  vfio-ap-mounts/           VM-path host mounts: /sys/devices/vfio_ap, /var/run/cdi (opt-in)
+  vfio-ap-mounts/           VM-path host mount: /sys/devices/vfio_ap (opt-in; /var/run/cdi is in base)
   selinux-spc/              seLinuxOptions.type: spc_t for enforcing SELinux (opt-in)
 overlays/
   template/                 reference overlay - copy and edit
@@ -94,13 +94,12 @@ cp -r deploy/kustomize/overlays/template deploy/kustomize/overlays/my-cluster
      - ../../components/selinux-spc
    ```
 
-   - `feature-container-workload` opts into the alpha container workload path: it ships the container DeviceClass together with the `ContainerWorkload` feature gate the driver requires before preparing a claim against it.
-     The path behind the gate is an unimplemented stub in this release, so leave the component out unless you are developing that path.
-   - `vfio-ap-mounts` carries the two host mounts the VM path cannot work without: the writable `/sys/devices/vfio_ap` subtree the unprivileged DaemonSet needs to manage vfio-ap mediated devices, and the host's `/var/run/cdi` directory the driver writes prepared-claim CDI specs into.
-     The runtime reads CDI specs from the host's `/var/run/cdi`.
-     Without the mount, a spec lands only inside the container and the consuming pod fails with `unresolvable CDI devices ibm.com/vfio-ap-passthrough=...`.
-     The sysfs mount also gates pod start on the `vfio_ap` module being loaded.
-     The CDI mount does not (the directory is created if absent).
+  - `feature-container-workload` opts into the alpha container workload path: it ships the container DeviceClass, the `ContainerWorkload` feature gate, and the `/sys/class/zcrypt` host mount used to create filtered zcrypt device nodes for native Pods.
+    Sample manifests live under `deploy/examples/`.
+  - `vfio-ap-mounts` carries the writable `/sys/devices/vfio_ap` subtree the unprivileged DaemonSet needs to manage vfio-ap mediated devices.
+    The host CDI spool (`/var/run/cdi`) is mounted by the base for both workload paths.
+    Without that base mount, a prepared claim fails at the runtime with `unresolvable CDI devices`.
+    The vfio_ap sysfs mount also gates pod start on the `vfio_ap` module being loaded.
    - `selinux-spc` runs the plugin SELinux-unconfined (`seLinuxOptions.type: spc_t`) so its AP sysfs writes are not denied on enforcing SELinux nodes (the default on Fedora, RHEL, and CentOS).
      `spc_t` is stock `container-selinux`.
      Capabilities stay dropped and seccomp stays on.

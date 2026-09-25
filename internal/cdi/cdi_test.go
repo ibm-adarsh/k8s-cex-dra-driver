@@ -119,13 +119,65 @@ func TestGenerateClaimSpec(t *testing.T) {
 	}
 }
 
-func TestGenerateClaimSpecMissingMdev(t *testing.T) {
-	newMatrixFixture(t, "other-uuid", "../../../../kernel/iommu_groups/1")
+func TestGenerateZcryptClaimSpec(t *testing.T) {
+	cdiRoot := filepath.Join(t.TempDir(), "cdi")
+	claimUID := testUUID
+	mounts := []*cdispec.Mount{{
+		HostPath:      "/host/shadow/bus/ap",
+		ContainerPath: "/sys/bus/ap",
+		Options:       []string{"ro", "bind"},
+	}}
 
-	if _, err := GenerateClaimSpec(t.TempDir(), testUUID, nil); err == nil {
-		t.Fatal("GenerateClaimSpec succeeded without a live mdev")
+	deviceID, err := GenerateZcryptClaimSpec(cdiRoot, claimUID, mounts)
+	if err != nil {
+		t.Fatalf("GenerateZcryptClaimSpec: %v", err)
+	}
+	if want := "ibm.com/zcrypt=" + claimUID; deviceID != want {
+		t.Errorf("deviceID = %q, want %q", deviceID, want)
+	}
+
+	data, err := os.ReadFile(filepath.Join(cdiRoot, "ibm.com-zcrypt-"+claimUID+".json"))
+	if err != nil {
+		t.Fatalf("read generated spec: %v", err)
+	}
+	var spec cdispec.Spec
+	if err := json.Unmarshal(data, &spec); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if spec.Kind != "ibm.com/zcrypt" {
+		t.Errorf("kind = %q, want ibm.com/zcrypt", spec.Kind)
+	}
+	if len(spec.Devices) != 1 || len(spec.Devices[0].ContainerEdits.DeviceNodes) != 2 {
+		t.Fatalf("spec devices = %+v, want zcrypt+z90crypt nodes", spec.Devices)
+	}
+	paths := []string{
+		spec.Devices[0].ContainerEdits.DeviceNodes[0].Path,
+		spec.Devices[0].ContainerEdits.DeviceNodes[1].Path,
+	}
+	if paths[0] != "/dev/zcrypt" || paths[1] != "/dev/z90crypt" {
+		t.Errorf("paths = %v, want /dev/zcrypt and /dev/z90crypt", paths)
 	}
 }
+
+func TestDeleteClaimSpecRemovesBothClasses(t *testing.T) {
+	cdiRoot := t.TempDir()
+	for _, class := range []string{"vfio-ap-passthrough", "zcrypt"} {
+		p := filepath.Join(cdiRoot, "ibm.com-"+class+"-"+testUUID+".json")
+		if err := os.WriteFile(p, []byte("{}"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := DeleteClaimSpec(cdiRoot, testUUID); err != nil {
+		t.Fatalf("DeleteClaimSpec: %v", err)
+	}
+	for _, class := range []string{"vfio-ap-passthrough", "zcrypt"} {
+		p := filepath.Join(cdiRoot, "ibm.com-"+class+"-"+testUUID+".json")
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Errorf("%s still present after delete", p)
+		}
+	}
+}
+
 
 func TestDeleteClaimSpec(t *testing.T) {
 	newMatrixFixture(t, testUUID, "../../../../kernel/iommu_groups/3")

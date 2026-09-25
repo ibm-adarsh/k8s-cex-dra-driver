@@ -3,8 +3,8 @@
 This driver enables Kubernetes workloads to use IBM Crypto Express (CEX) cards on IBM Z and LinuxONE systems through Kubernetes Dynamic Resource Allocation (DRA).
 It exposes CEX cards as allocatable Kubernetes resources.
 
-The current release supports [KubeVirt](https://kubevirt.io/) virtual machine workloads.
-Support for containerized workloads is planned for a future release.
+The current release supports [KubeVirt](https://kubevirt.io/) virtual machine workloads by default.
+Native container (Pod) workloads are available behind the alpha `ContainerWorkload` feature gate — see [Requesting queues](./docs/usage/usage.md#native-container-claims), the [`feature-container-workload`](./deploy/kustomize/components/feature-container-workload) component, and [`deploy/examples/`](./deploy/examples/).
 
 The [k8s-cex-dev-plugin](https://github.com/ibm-s390-cloud/k8s-cex-dev-plugin) project also gives Kubernetes workloads access to CEX cards.
 It is separate from this driver and does not use DRA.

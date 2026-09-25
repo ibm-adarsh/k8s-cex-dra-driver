@@ -5,5 +5,5 @@ description: >
   Requesting queues and generating claim manifests
 ---
 
-- [Requesting queues](usage.md): ResourceClaims, CEL selectors, constraints, and claim configuration.
+- [Requesting queues](usage.md): ResourceClaims, CEL selectors, constraints, claim configuration, and native container claims.
 - [Claim generator](generator.md) (experimental): build a claim and workload manifest interactively from the queues your cluster publishes.

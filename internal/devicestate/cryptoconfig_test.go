@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"k8s-cex-dra-driver/internal/cryptoconfig"
+	"k8s-cex-dra-driver/internal/zcryptnode"
 )
 
 // TestPrepareRejectsMalformedConfigOnEitherBinding pins that strict parsing is a
@@ -97,8 +98,12 @@ func TestPrepareAcceptsWellFormedConfigOnEitherBinding(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			// The VM case needs a matrix root: usage-only still builds an mdev,
-			// it just assigns no control domain.
+			// it just assigns no control domain. The container case needs the
+			// fake /sys/class/zcrypt the filtered-node path writes to.
 			newUnprepareFixture(t, nil)
+			if tc.deviceClass == DeviceClassContainer {
+				zcryptnode.InstallTestHooks(t, t.TempDir())
+			}
 			s := cdTestState(t)
 
 			_, err := s.Prepare(t.Context(), claimWithMode(t, tc.deviceClass, tc.mode))

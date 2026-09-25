@@ -11,6 +11,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 
 	"k8s-cex-dra-driver/internal/cryptoconfig"
+	"k8s-cex-dra-driver/internal/zcryptnode"
 )
 
 const cdTestDriver = "cex-driver.ibm.com"
@@ -144,6 +145,7 @@ func TestPrepareIgnoresControlDomainModeForContainers(t *testing.T) {
 	// The container path sits behind the ContainerWorkload gate. This test is
 	// about what the path does once reached.
 	enableContainerWorkload(t)
+	zcryptnode.InstallTestHooks(t, t.TempDir())
 	s := cdTestState(t)
 
 	devices, err := s.Prepare(t.Context(), claimWithMode(t, DeviceClassContainer, cryptoconfig.ControlDomainModeAllControlDomains))
@@ -152,6 +154,9 @@ func TestPrepareIgnoresControlDomainModeForContainers(t *testing.T) {
 	}
 	if len(devices) != 1 {
 		t.Fatalf("prepared %d devices, want 1", len(devices))
+	}
+	if ids := devices[0].GetCdiDeviceIds(); len(ids) != 1 {
+		t.Errorf("CDI devices = %v, want one", ids)
 	}
 }
 

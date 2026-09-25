@@ -1,0 +1,37 @@
+# Example CDI specification the driver writes for a container claim.
+#
+# File on the node (under --cdi-root, default /var/run/cdi):
+#   ibm.com-zcrypt-<claimUID>.json
+#
+# Kind / device ID returned from NodePrepareResources:
+#   ibm.com/zcrypt=<claimUID>
+#
+# HostPath for the character device is the filtered node created via
+# /sys/class/zcrypt (name zc-<28-hex-of-claimUID>). Shadow sysfs trees live
+# under the kubelet plugin data directory and are bind-mounted read-only over
+# /sys/bus/ap and /sys/devices/ap inside the container.
+#
+# Note: the driver writes JSON; this YAML is the equivalent shape for reading.
+cdiVersion: "0.5.0"
+kind: ibm.com/zcrypt
+devices:
+  - name: 8163c8ae-0392-4bd1-b3a6-8d059c9be180
+    containerEdits:
+      deviceNodes:
+        - path: /dev/zcrypt
+          hostPath: /dev/zc-8163c8ae03924bd1b3a68d059c9b
+          permissions: rw
+        - path: /dev/z90crypt
+          hostPath: /dev/zc-8163c8ae03924bd1b3a68d059c9b
+          permissions: rw
+      mounts:
+        - hostPath: /var/lib/kubelet/plugins/cex-driver.ibm.com/shadow-sysfs/8163c8ae-0392-4bd1-b3a6-8d059c9be180/bus/ap
+          containerPath: /sys/bus/ap
+          options:
+            - ro
+            - bind
+        - hostPath: /var/lib/kubelet/plugins/cex-driver.ibm.com/shadow-sysfs/8163c8ae-0392-4bd1-b3a6-8d059c9be180/devices/ap
+          containerPath: /sys/devices/ap
+          options:
+            - ro
+            - bind

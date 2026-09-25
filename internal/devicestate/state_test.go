@@ -9,10 +9,13 @@ import (
 	"testing"
 	"time"
 
+	resourceapi "k8s.io/api/resource/v1"
+
 	"k8s-cex-dra-driver/internal/binding"
 	"k8s-cex-dra-driver/internal/mdev"
 	"k8s-cex-dra-driver/internal/metadata"
 	"k8s-cex-dra-driver/internal/sysfs"
+	"k8s-cex-dra-driver/internal/zcryptnode"
 )
 
 // unprepareFixture is the slice of sysfs Unprepare touches, under a temp dir.
@@ -216,19 +219,35 @@ func TestUnprepareReturnsQueuesToZcrypt(t *testing.T) {
 }
 
 // TestUnprepareContainerClaimSkipsDrain: a container claim builds no mdev and
-// writes no metadata, so its teardown must not fall back to the bus-wide
-// reconcile - that sweep walks the whole AP bus under the state lock the scan
-// loop needs, and an orphaned queue is the startup drain's to reclaim.
+// must not fall back to the bus-wide vfio-ap reconcile - that sweep walks the
+// whole AP bus under the state lock the scan loop needs. Preparing then
+// unpreparing also tears down the filtered zcrypt node.
 func TestUnprepareContainerClaimSkipsDrain(t *testing.T) {
 	f := newUnprepareFixture(t, map[string]string{"03.0002": "vfio_ap"})
+	zcryptnode.InstallTestHooks(t, t.TempDir())
+	enableContainerWorkload(t)
 
-	s := New("node", "cex-driver.ibm.com", t.TempDir(), t.TempDir())
-	if err := s.Unprepare(t.Context(), "container-claim"); err != nil {
+	pluginDataDir := t.TempDir()
+	s := New("node", cdTestDriver, t.TempDir(), pluginDataDir)
+	s.allocatable["cex-01-0002"] = resourceapi.Device{
+		Attributes: map[resourceapi.QualifiedName]resourceapi.DeviceAttribute{
+			"cex.ibm.com/apid": {StringValue: ptr("01")},
+			"cex.ibm.com/apqi": {StringValue: ptr("0002")},
+		},
+	}
+	claim := claimWithMode(t, DeviceClassContainer, "")
+	if _, err := s.Prepare(t.Context(), claim); err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	if err := s.Unprepare(t.Context(), string(claim.UID)); err != nil {
 		t.Fatalf("Unprepare: %v", err)
 	}
 
 	if got := f.override(t, "03.0002"); got != "vfio_ap" {
 		t.Errorf("driver_override = %q, want %q (container teardown must not drain the bus)", got, "vfio_ap")
+	}
+	if zcryptnode.Exists(string(claim.UID)) {
+		t.Error("zcrypt node still present after Unprepare")
 	}
 }
 

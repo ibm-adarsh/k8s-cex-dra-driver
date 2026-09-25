@@ -3,18 +3,13 @@ kind: Component
 
 # VM-path host mounts. Adds the writable /sys/devices/vfio_ap subtree the driver
 # needs to manage vfio-ap mediated devices (mdev create / assign / remove via the
-# matrix interface, internal/mdev/mdev.go), plus the host CDI spec directory the
-# driver writes prepared-claim specs into (internal/cdi/cdi.go). Under the
-# hardened base the container's own /sys is read-only, so the vfio_ap bind mount
-# is the only writable view of the matrix interface.
+# matrix interface, internal/mdev/mdev.go). Under the hardened base the
+# container's own /sys is read-only, so the vfio_ap bind mount is the only
+# writable view of the matrix interface.
 #
-# The CDI mount is what lets the runtime resolve the device. The driver writes
-# `ibm.com/vfio-ap-passthrough=<claimUID>` specs to --cdi-root (/var/run/cdi).
-# containerd reads CDI specs from the *host's* /var/run/cdi. Without this bind
-# mount the spec lands inside the container only and the runtime fails with
-# "unresolvable CDI devices ibm.com/vfio-ap-passthrough=...". `type:
-# DirectoryOrCreate` (not Directory) because the spool dir may not exist yet on a
-# fresh node, and the driver/runtime populate it.
+# The host CDI spool (/var/run/cdi) lives in the base DaemonSet: both the VM
+# and container prepare paths write CDI specs there, and DirectoryOrCreate does
+# not gate pod start. This component therefore only carries the vfio_ap mount.
 #
 # Scoped to a component, NOT folded into deviceclass-vm, on purpose: a hostPath
 # with `type: Directory` is a kubelet pre-start gate that `privileged` does not
@@ -22,7 +17,7 @@ kind: Component
 # (a VM-path-only prerequisite). The dev overlay also pulls deviceclass-vm for
 # the mock DeviceClass on bare nodes. Gating its pod start there would break it.
 # Include this component only on VM-capable nodes that have vfio_ap loaded (the
-# example overlay). Container-only and dev deployments omit it.
+# example overlay). Container-only and bare-node deployments omit it.
 patches:
   - target:
       kind: DaemonSet
@@ -40,14 +35,8 @@ patches:
                 volumeMounts:
                   - name: sys-devices-vfio-ap
                     mountPath: /sys/devices/vfio_ap
-                  - name: cdi
-                    mountPath: /var/run/cdi
             volumes:
               - name: sys-devices-vfio-ap
                 hostPath:
                   path: /sys/devices/vfio_ap
                   type: Directory
-              - name: cdi
-                hostPath:
-                  path: /var/run/cdi
-                  type: DirectoryOrCreate

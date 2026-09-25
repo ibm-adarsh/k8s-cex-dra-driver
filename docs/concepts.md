@@ -32,10 +32,11 @@ The driver defines two DeviceClasses, both selecting every device the driver pub
 | DeviceClass                        | Intended binding                                                                        |
 | ---------------------------------- | --------------------------------------------------------------------------------------- |
 | `ap-queue.virtual-machine.ibm.com` | vfio-ap mediated device, passed to a KubeVirt VM                                        |
-| `ap-queue.container.ibm.com`       | zcrypt device node passthrough into a container (feature gated, disabled at this stage) |
+| `ap-queue.container.ibm.com`       | filtered zcrypt device node + shadow AP sysfs into a container (feature gated, alpha) |
 
 Which classes a cluster holds is an install choice, made per class through the opt-in Kustomize components in [Driver installation](installation/driver.md).
 The container class installs only with the alpha `feature-container-workload` component.
+That component also turns on `ContainerWorkload=true` and mounts `/sys/class/zcrypt` so the driver can create per-claim filtered nodes.
 
 Both use the same Common Expression Language (CEL) selector:
 

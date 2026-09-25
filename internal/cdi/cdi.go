@@ -1,5 +1,6 @@
-// Package cdi generates Container Device Interface specs for vfio-ap mediated
-// devices allocated to a claim.
+// Package cdi generates Container Device Interface specs for prepared claims.
+// Virtual-machine claims get a vfio-ap passthrough device; container claims get
+// a filtered zcrypt character device plus shadow AP sysfs mounts.
 package cdi
 
 import (
@@ -14,6 +15,7 @@ import (
 
 	"k8s-cex-dra-driver/internal/logphase"
 	"k8s-cex-dra-driver/internal/mdev"
+	"k8s-cex-dra-driver/internal/zcryptnode"
 )
 
 const (
@@ -23,8 +25,12 @@ const (
 	// on DeviceNode and is accepted by all modern containerd/CRI-O releases.
 	cdiVersion = "0.5.0"
 	cdiVendor  = "ibm.com"
-	cdiClass   = "vfio-ap-passthrough"
-	cdiKind    = cdiVendor + "/" + cdiClass
+
+	cdiClassVFIO   = "vfio-ap-passthrough"
+	cdiClassZcrypt = "zcrypt"
+
+	cdiKindVFIO   = cdiVendor + "/" + cdiClassVFIO
+	cdiKindZcrypt = cdiVendor + "/" + cdiClassZcrypt
 
 	// cdiSpecFileMode is the mode for the generated CDI spec file. The CRI
 	// runtime reads it back. Rootless runtimes run as a non-root user, so the
@@ -51,7 +57,7 @@ func GenerateClaimSpec(cdiRoot, claimUID string, mounts []*cdispec.Mount) (strin
 
 	spec := &cdispec.Spec{
 		Version: cdiVersion,
-		Kind:    cdiKind,
+		Kind:    cdiKindVFIO,
 		Devices: []cdispec.Device{
 			{
 				Name: claimUID,
@@ -72,66 +78,112 @@ func GenerateClaimSpec(cdiRoot, claimUID string, mounts []*cdispec.Mount) (strin
 		},
 	}
 
+	return writeSpec(cdiRoot, cdiClassVFIO, cdiKindVFIO, claimUID, spec)
+}
+
+// GenerateZcryptClaimSpec creates a CDI spec for a prepared container claim.
+// The host character device is the filtered zcrypt node created for the claim;
+// inside the container it appears as both /dev/zcrypt and /dev/z90crypt so
+// modern and legacy crypto stacks resolve it. mounts carries the shadow AP
+// sysfs bind mounts (and any future extras).
+func GenerateZcryptClaimSpec(cdiRoot, claimUID string, mounts []*cdispec.Mount) (string, error) {
+	hostDev := zcryptnode.HostDevicePath(claimUID)
+
+	spec := &cdispec.Spec{
+		Version: cdiVersion,
+		Kind:    cdiKindZcrypt,
+		Devices: []cdispec.Device{
+			{
+				Name: claimUID,
+				ContainerEdits: cdispec.ContainerEdits{
+					DeviceNodes: []*cdispec.DeviceNode{
+						{
+							Path:        "/dev/zcrypt",
+							HostPath:    hostDev,
+							Permissions: "rw",
+						},
+						{
+							Path:        "/dev/z90crypt",
+							HostPath:    hostDev,
+							Permissions: "rw",
+						},
+					},
+					Mounts: mounts,
+				},
+			},
+		},
+	}
+
+	return writeSpec(cdiRoot, cdiClassZcrypt, cdiKindZcrypt, claimUID, spec)
+}
+
+func writeSpec(cdiRoot, class, kind, claimUID string, spec *cdispec.Spec) (string, error) {
 	data, err := json.MarshalIndent(spec, "", "  ")
 	if err != nil {
 		return "", fmt.Errorf("marshal CDI spec: %w", err)
 	}
 
-	fileName := fmt.Sprintf("%s-%s-%s.json", cdiVendor, cdiClass, claimUID)
-	filePath := filepath.Join(cdiRoot, fileName)
-
+	filePath := specPath(cdiRoot, class, claimUID)
 	if err := os.MkdirAll(cdiRoot, cdiDirMode); err != nil {
 		return "", fmt.Errorf("create CDI directory %s: %w", cdiRoot, err)
 	}
-
 	if err := os.WriteFile(filePath, data, cdiSpecFileMode); err != nil {
 		return "", fmt.Errorf("write CDI spec %s: %w", filePath, err)
 	}
 
-	deviceID := fmt.Sprintf("%s=%s", cdiKind, claimUID)
-	logphase.Logf(logphase.Preparation, "CDI spec written: %s (device ID: %s, VFIO group: %d)", filePath, deviceID, group)
-
+	deviceID := fmt.Sprintf("%s=%s", kind, claimUID)
+	logphase.Logf(logphase.Preparation, "CDI spec written: %s (device ID: %s)", filePath, deviceID)
 	return deviceID, nil
 }
 
-// DeleteClaimSpec removes the CDI spec file for a claim.
+// DeleteClaimSpec removes every CDI spec file this driver may have written for
+// a claim (vfio-ap and zcrypt). Missing files are success: Unprepare retries
+// after partial failures.
 func DeleteClaimSpec(cdiRoot, claimUID string) error {
-	fileName := fmt.Sprintf("%s-%s-%s.json", cdiVendor, cdiClass, claimUID)
-	filePath := filepath.Join(cdiRoot, fileName)
-
-	if err := os.Remove(filePath); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("remove CDI spec %s: %w", filePath, err)
+	for _, class := range []string{cdiClassVFIO, cdiClassZcrypt} {
+		filePath := specPath(cdiRoot, class, claimUID)
+		if err := os.Remove(filePath); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove CDI spec %s: %w", filePath, err)
+		}
+		logphase.Logf(logphase.Preparation, "CDI spec removed: %s", filePath)
 	}
-
-	logphase.Logf(logphase.Preparation, "CDI spec removed: %s", filePath)
 	return nil
 }
 
 // GCStaleClaimSpecs removes CDI spec files this driver wrote for claims that
-// no longer have a live mdev. Specs are written at Prepare and removed at
-// Unprepare, so a claim that dies without an Unprepare - a crash between the
-// two, or a Prepare that failed after the write - leaks its file forever.
-// Only files matching this driver's vendor-class prefix are considered,
-// because cdiRoot is shared with other CDI producers. Best-effort per file.
-// An error is returned only when the listing itself fails.
+// are no longer live. Specs are written at Prepare and removed at Unprepare,
+// so a claim that dies without an Unprepare - a crash between the two, or a
+// Prepare that failed after the write - leaks its file forever.
+//
+// live reports whether a claimUID still has live backing state (an mdev for
+// vfio-ap specs, a filtered zcrypt node for zcrypt specs). Only files matching
+// this driver's vendor-class prefixes are considered, because cdiRoot is shared
+// with other CDI producers. Best-effort per file. An error is returned only
+// when a listing itself fails.
 func GCStaleClaimSpecs(cdiRoot string, live func(claimUID string) bool) error {
-	prefix := cdiVendor + "-" + cdiClass + "-"
-	matches, err := filepath.Glob(filepath.Join(cdiRoot, prefix+"*.json"))
-	if err != nil {
-		return fmt.Errorf("glob CDI specs under %s: %w", cdiRoot, err)
-	}
-	for _, p := range matches {
-		claimUID := strings.TrimSuffix(strings.TrimPrefix(filepath.Base(p), prefix), ".json")
-		if claimUID == "" || live(claimUID) {
-			continue
+	for _, class := range []string{cdiClassVFIO, cdiClassZcrypt} {
+		prefix := cdiVendor + "-" + class + "-"
+		matches, err := filepath.Glob(filepath.Join(cdiRoot, prefix+"*.json"))
+		if err != nil {
+			return fmt.Errorf("glob CDI specs under %s: %w", cdiRoot, err)
 		}
-		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
-			logphase.Warnf(logphase.Preparation, "remove stale CDI spec %s: %v", p, err)
-			continue
+		for _, p := range matches {
+			claimUID := strings.TrimSuffix(strings.TrimPrefix(filepath.Base(p), prefix), ".json")
+			if claimUID == "" || live(claimUID) {
+				continue
+			}
+			if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+				logphase.Warnf(logphase.Preparation, "remove stale CDI spec %s: %v", p, err)
+				continue
+			}
+			logphase.Logf(logphase.Preparation, "removed stale CDI spec %s (claim %s no longer live)", p, claimUID)
 		}
-		logphase.Logf(logphase.Preparation, "removed stale CDI spec %s (no live mdev for claim %s)", p, claimUID)
 	}
 	return nil
+}
+
+func specPath(cdiRoot, class, claimUID string) string {
+	return filepath.Join(cdiRoot, fmt.Sprintf("%s-%s-%s.json", cdiVendor, class, claimUID))
 }
 
 // VFIOGroupFromMdev reads the VFIO iommu_group number for a given mdev UUID.

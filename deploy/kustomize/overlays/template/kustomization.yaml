@@ -12,21 +12,22 @@ resources:
 # DeviceClasses are opt-in. Omit a component to disable that class.
 # The skip-preflight component is
 # also available (../../components/skip-preflight) but is intentionally left out
-# of this example - it is for dev/demo clusters only. So is
-# ../../components/feature-container-workload: it opts into the alpha container
-# workload path (container DeviceClass + ContainerWorkload feature gate), which
-# is an unimplemented stub in this release.
+# of this example - it is for dev/demo clusters only.
 components:
   - ../../components/deviceclass-vm
   # VM path needs the writable /sys/devices/vfio_ap mount once the base is
   # unprivileged. Safe here: this is a real, VM-capable deployment
   # with vfio_ap loaded, so the type:Directory mount does not gate pod start.
+  # /var/run/cdi is mounted by the base for both workload paths.
   - ../../components/vfio-ap-mounts
   # Enforcing SELinux (default on Fedora/RHEL/CentOS): run the plugin
   # SELinux-unconfined (seLinuxOptions.type: spc_t) so its AP sysfs_t writes are
   # not denied. Stock, no per-node install. Omit on permissive / non-SELinux
   # clusters (harmless either way).
   - ../../components/selinux-spc
+  # Optional: uncomment to enable native container claims
+  # (DeviceClass + ContainerWorkload gate + /sys/class/zcrypt mount).
+  # - ../../components/feature-container-workload
 
 # Point the DaemonSet at a real image. Replace newName/newTag with your
 # registry reference (see "Build and push the image" in

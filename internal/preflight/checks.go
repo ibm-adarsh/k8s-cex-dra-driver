@@ -16,6 +16,7 @@ import (
 const (
 	sysBusAPPath        = "/sys/bus/ap"
 	sysClassMdevBusPath = "/sys/class/mdev_bus"
+	sysClassZcryptPath  = "/sys/class/zcrypt"
 )
 
 // apQueueDirGlob enumerates AP queue directories (card*/<apid>.<apqi>), not
@@ -33,6 +34,7 @@ var registry = []check{
 	{name: "/sys/bus/ap present", severity: SeverityError, body: checkPathPresent(sysBusAPPath)},
 	{name: "vfio_ap loaded (/sys/devices/vfio_ap/matrix present)", severity: SeverityError, body: checkVFIOAPMatrix, gate: features.VirtualMachineWorkload},
 	{name: "mdev support (/sys/class/mdev_bus present)", severity: SeverityError, body: checkPathPresent(sysClassMdevBusPath), gate: features.VirtualMachineWorkload},
+	{name: "zcrypt multi-device nodes (/sys/class/zcrypt present)", severity: SeverityError, body: checkPathPresent(sysClassZcryptPath), gate: features.ContainerWorkload},
 	{name: "driver_override on AP queues", severity: SeverityError, body: checkDriverOverride},
 	{name: "zcrypt masks all-1s (driver_override precondition)", severity: SeverityError, body: checkZcryptMasks},
 }

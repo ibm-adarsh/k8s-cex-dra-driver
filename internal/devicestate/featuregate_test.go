@@ -7,6 +7,7 @@ import (
 	resourceapi "k8s.io/api/resource/v1"
 
 	"k8s-cex-dra-driver/internal/features"
+	"k8s-cex-dra-driver/internal/zcryptnode"
 )
 
 // enableContainerWorkload flips the ContainerWorkload gate on for one test.
@@ -77,11 +78,12 @@ func TestPrepareRejectsContainerClaimWhileGateDisabled(t *testing.T) {
 	}
 }
 
-// TestPrepareContainerStubBehindEnabledGate pins that enabling the gate
-// restores exactly the pre-gate stub: the claim prepares, its device is
-// reported, and no CDI device is attached (the path is not implemented).
-func TestPrepareContainerStubBehindEnabledGate(t *testing.T) {
+// TestPrepareContainerClaimReturnsCDI pins that enabling the gate prepares a
+// container claim into a filtered zcrypt CDI device rather than the old stub
+// that reported success with no device attached.
+func TestPrepareContainerClaimReturnsCDI(t *testing.T) {
 	enableContainerWorkload(t)
+	zcryptnode.InstallTestHooks(t, t.TempDir())
 	s := cdTestState(t)
 
 	devices, err := s.Prepare(t.Context(), claimWithMode(t, DeviceClassContainer, ""))
@@ -91,8 +93,15 @@ func TestPrepareContainerStubBehindEnabledGate(t *testing.T) {
 	if len(devices) != 1 {
 		t.Fatalf("prepared %d devices, want 1", len(devices))
 	}
-	if ids := devices[0].GetCdiDeviceIds(); len(ids) != 0 {
-		t.Errorf("prepared device carries CDI devices %v, want none (unimplemented stub)", ids)
+	ids := devices[0].GetCdiDeviceIds()
+	if len(ids) != 1 {
+		t.Fatalf("CDI devices = %v, want one zcrypt id", ids)
+	}
+	if want := "ibm.com/zcrypt=claim-under-test"; ids[0] != want {
+		t.Errorf("CDI id = %q, want %q", ids[0], want)
+	}
+	if !zcryptnode.Exists("claim-under-test") {
+		t.Error("zcrypt node missing after Prepare")
 	}
 }
 

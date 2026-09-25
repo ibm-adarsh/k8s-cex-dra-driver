@@ -23,6 +23,8 @@ import (
 	"k8s-cex-dra-driver/internal/logphase"
 	"k8s-cex-dra-driver/internal/mdev"
 	"k8s-cex-dra-driver/internal/metadata"
+	"k8s-cex-dra-driver/internal/shadowsysfs"
+	"k8s-cex-dra-driver/internal/zcryptnode"
 )
 
 const (
@@ -250,12 +252,11 @@ func (s *DeviceState) Prepare(ctx context.Context, claim *resourceapi.ResourceCl
 		return nil, fmt.Errorf("claim %s mixes VM and container DeviceClasses, which is not supported", claim.UID)
 	}
 
-	// The container path is an unimplemented stub that would prepare the claim
-	// into a pod with no crypto device, so it stays behind an off-by-default
-	// gate. Checked before anything is created or switched: the claim is left
-	// untouched for a retry after a gate flip and plugin restart.
+	// The container path stays behind an off-by-default alpha gate. Checked
+	// before anything is created: the claim is left untouched for a retry
+	// after a gate flip and plugin restart.
 	if hasContainer && !features.Gate.Enabled(features.ContainerWorkload) {
-		return nil, fmt.Errorf("DeviceClass %q requires the ContainerWorkload feature gate, which is disabled: the container passthrough path is not implemented in this release", DeviceClassContainer)
+		return nil, fmt.Errorf("DeviceClass %q requires the ContainerWorkload feature gate, which is disabled", DeviceClassContainer)
 	}
 
 	// The VM path is guarded the same way: its gate off means the node was
@@ -276,13 +277,13 @@ func (s *DeviceState) Prepare(ctx context.Context, claim *resourceapi.ResourceCl
 		return nil, fmt.Errorf("resolve device configuration for claim %s: %w", claim.UID, err)
 	}
 
+	claimUID := string(claim.UID)
+
 	if hasContainer {
-		logphase.Logf(logphase.Preparation, "Container DeviceClass: skipping mdev creation for claim %s", claim.UID)
-		return s.devicesFromClaim(claim, nil)
+		return s.prepareContainerClaim(claim, claimUID)
 	}
 
 	// VM DeviceClass: per-queue switching + mdev creation
-	claimUID := string(claim.UID)
 
 	// Check the control-domain mode before anything touches the mdev, so a claim
 	// asking for a mode the driver cannot serve fails without leaving a
@@ -333,6 +334,55 @@ func (s *DeviceState) Prepare(ctx context.Context, claim *resourceapi.ResourceCl
 		return nil, fmt.Errorf("generate CDI spec for claim %s: %w", claimUID, err)
 	}
 
+	return s.devicesFromClaim(claim, []string{cdiDeviceID})
+}
+
+// prepareContainerClaim binds allocated APQNs into a native container via a
+// filtered zcrypt device node and a claim-scoped shadow AP sysfs tree. Queues
+// stay on the host zcrypt stack - unlike the VM path, nothing is rebound to
+// vfio-ap. The matrix constraint still applies: the node apmask×aqmask is a
+// Cartesian product, so a non-rectangular allocation would expose queues the
+// claim was not given.
+func (s *DeviceState) prepareContainerClaim(claim *resourceapi.ResourceClaim, claimUID string) ([]*drapbv1.Device, error) {
+	_, _, allocated, err := s.collectAllocatedAPQNs(claim)
+	if err != nil {
+		return nil, err
+	}
+	apqns := make([]mdev.APQN, 0, len(allocated))
+	for q := range allocated {
+		apqns = append(apqns, q)
+	}
+
+	if err := zcryptnode.Create(claimUID, apqns); err != nil {
+		return nil, fmt.Errorf("create zcrypt node for claim %s: %w", claimUID, err)
+	}
+	if err := shadowsysfs.Build(s.pluginDataDir, claimUID, apqns); err != nil {
+		_ = zcryptnode.Destroy(claimUID)
+		return nil, fmt.Errorf("build shadow sysfs for claim %s: %w", claimUID, err)
+	}
+
+	cdiMounts := []*cdispec.Mount{
+		{
+			HostPath:      shadowsysfs.BusMount(s.pluginDataDir, claimUID),
+			ContainerPath: "/sys/bus/ap",
+			Options:       []string{"ro", "bind"},
+		},
+		{
+			HostPath:      shadowsysfs.DevicesMount(s.pluginDataDir, claimUID),
+			ContainerPath: "/sys/devices/ap",
+			Options:       []string{"ro", "bind"},
+		},
+	}
+
+	cdiDeviceID, err := cdi.GenerateZcryptClaimSpec(s.cdiRoot, claimUID, cdiMounts)
+	if err != nil {
+		_ = shadowsysfs.Remove(s.pluginDataDir, claimUID)
+		_ = zcryptnode.Destroy(claimUID)
+		return nil, fmt.Errorf("generate zcrypt CDI spec for claim %s: %w", claimUID, err)
+	}
+
+	logphase.Logf(logphase.Preparation, "Container claim %s prepared: zcrypt node %s, CDI %s",
+		claimUID, zcryptnode.NodeName(claimUID), cdiDeviceID)
 	return s.devicesFromClaim(claim, []string{cdiDeviceID})
 }
 
@@ -543,15 +593,28 @@ func (s *DeviceState) Unprepare(ctx context.Context, claimUID string) error {
 	}
 	defer s.unlock()
 
-	// Captured before the deletes below remove both files. Only the VM path
+	// Captured before the deletes below remove the witnesses. Only the VM path
 	// builds an mdev and writes claim metadata, so finding either means this
-	// claim may have switched queues to vfio-ap. A container claim leaves
-	// neither and must not fall through to the bus-wide reconcile, which
-	// walks the whole AP bus while holding the lock the scan loop needs.
+	// claim may have switched queues to vfio-ap. A container claim leaves a
+	// filtered zcrypt node and/or shadow sysfs instead, and must not fall
+	// through to the bus-wide vfio-ap reconcile.
 	wasVM := mdev.Exists(claimUID) || metadata.ClaimMetadataExists(s.pluginDataDir, claimUID)
+	wasContainer := zcryptnode.Exists(claimUID) || shadowsysfs.Exists(s.pluginDataDir, claimUID)
 
 	if err := cdi.DeleteClaimSpec(s.cdiRoot, claimUID); err != nil {
 		return fmt.Errorf("delete CDI spec for claim %s: %w", claimUID, err)
+	}
+
+	// Container-path teardown: drop the filtered node and its shadow tree.
+	// Best-effort ordering - CDI is already gone so the runtime will not newly
+	// resolve the device; destroying the node next releases the minor.
+	if wasContainer {
+		if err := zcryptnode.Destroy(claimUID); err != nil {
+			logphase.Warnf(logphase.Preparation, "destroy zcrypt node for claim %s: %v", claimUID, err)
+		}
+		if err := shadowsysfs.Remove(s.pluginDataDir, claimUID); err != nil {
+			logphase.Warnf(logphase.Preparation, "remove shadow sysfs for claim %s: %v", claimUID, err)
+		}
 	}
 
 	// Delete KEP-5304 metadata (best-effort for cleanup)
@@ -577,7 +640,7 @@ func (s *DeviceState) Unprepare(ctx context.Context, claimUID string) error {
 
 	if len(apqns) == 0 {
 		if !wasVM {
-			logphase.Logf(logphase.Preparation, "Claim %s bound no queues (container claim), skipping vfio-ap reconcile", claimUID)
+			logphase.Logf(logphase.Preparation, "Claim %s bound no vfio-ap queues (container or empty claim), skipping vfio-ap reconcile", claimUID)
 			return nil
 		}
 		// The matrix is authoritative, but it only lives as long as the mdev

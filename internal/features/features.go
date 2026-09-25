@@ -37,10 +37,9 @@ import (
 
 const (
 	// ContainerWorkload enables claims against the container DeviceClass
-	// ap-queue.container.ibm.com, which binds AP queues into containers via
-	// zcrypt rather than vfio-ap. The path behind it is an unimplemented
-	// stub: enabling the gate exposes it for development, it does not make
-	// a container claim deliver a device.
+	// ap-queue.container.ibm.com, which binds allocated AP queues into
+	// containers via a filtered zcrypt device node and shadow AP sysfs
+	// (rather than vfio-ap). Alpha: opt in explicitly.
 	//
 	// Owner: @bodo-brand1
 	// Alpha: v1.0.0.

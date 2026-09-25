@@ -122,6 +122,11 @@ spec:
               mountPath: /sys/devices/ap
             - name: sys-bus-ap
               mountPath: /sys/bus/ap
+            # Host CDI spool: the driver writes prepared-claim specs here and
+            # the node runtime reads them from the same host path. DirectoryOrCreate
+            # so a fresh node without the dir still starts.
+            - name: cdi
+              mountPath: /var/run/cdi
       volumes:
         - name: plugins-registry
           hostPath:
@@ -139,3 +144,7 @@ spec:
           hostPath:
             path: /sys/bus/ap
             type: Directory
+        - name: cdi
+          hostPath:
+            path: /var/run/cdi
+            type: DirectoryOrCreate

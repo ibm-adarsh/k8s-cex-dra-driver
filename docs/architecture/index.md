@@ -12,7 +12,8 @@ Each instance:
 - publishes every visible AP queue as a device, one ResourceSlice per Crypto Express adapter on the node,
 - prepares allocated devices when a workload starts.
   For a virtual-machine claim that means creating a vfio-ap mediated device covering the allocated queues.
-  Unprepare tears it down again.
+  For a container claim (alpha `ContainerWorkload`) that means creating a filtered zcrypt device node and a shadow AP sysfs tree, returned to the runtime as a CDI device.
+  Unprepare tears the prepared state down again.
 
 Scheduling stays entirely in Kubernetes: the scheduler matches ResourceClaims against ResourceSlice devices using the DeviceClass and claim selectors.
 The driver never picks devices itself.
@@ -51,6 +52,13 @@ The crossing arrow points the other way.
 
 ![Allocate and prepare path: a workload operator creates a ResourceClaim, the scheduler picks devices from the published ResourceSlices, kubelet calls NodePrepareResources, and the driver rebinds the queue to vfio_ap and creates a vfio-ap mediated device for the VM](diagrams/prepare-path.svg)
 
+A claim against `ap-queue.container.ibm.com` takes a different prepare path on the same published inventory.
+The allocated queues stay bound to the host zcrypt stack.
+The driver creates a filtered zcrypt character device under `/sys/class/zcrypt` (per-node `apmask`/`aqmask`, independent of the bus-level masks), builds a claim-scoped shadow of `/sys/bus/ap` and `/sys/devices/ap`, writes a CDI spec of kind `ibm.com/zcrypt`, and returns that CDI device ID to kubelet.
+The container runtime injects `/dev/zcrypt` (and `/dev/z90crypt`) plus the shadow mounts into the Pod.
+Unprepare destroys the node, removes the shadow tree, and deletes the CDI file.
+Bus-level `apmask`/`aqmask` stay all-1s, so the same node can still serve vfio-ap VM claims.
+
 ## Queue binding states
 
 A queue is bound to exactly one kernel driver at a time, and preparing a claim is what moves it.
@@ -62,6 +70,7 @@ Intent and current state are separate.
 The DeviceClass on the claim is what the workload asked for.
 The `cex.ibm.com/driver` attribute is what the queue is bound to at the moment you look.
 A queue that no claim has prepared yet reports the binding it happens to have, not the one some claim would like it to have.
+Container claims never flip that attribute: they consume queues that remain on `cex4queue`.
 
 ## Claim lifecycle
 
